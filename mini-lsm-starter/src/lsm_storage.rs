@@ -1,12 +1,13 @@
 #![allow(dead_code)] // REMOVE THIS LINE after fully implementing this functionality
 
 use std::collections::HashMap;
-use std::ops::Bound;
+use std::ops::{Bound, Deref};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
 use anyhow::Result;
+use arc_swap::AsRaw;
 use bytes::Bytes;
 use parking_lot::{Mutex, MutexGuard, RwLock};
 
@@ -15,11 +16,13 @@ use crate::compact::{
     CompactionController, CompactionOptions, LeveledCompactionController, LeveledCompactionOptions,
     SimpleLeveledCompactionController, SimpleLeveledCompactionOptions, TieredCompactionController,
 };
+use crate::iterators::merge_iterator::MergeIterator;
+use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
-use crate::mem_table::MemTable;
+use crate::mem_table::{map_bound, MemTable, MemTableIterator};
 use crate::mvcc::LsmMvccInner;
-use crate::table::SsTable;
+use crate::table::{SsTable, SsTableIterator};
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
 
@@ -279,7 +282,25 @@ impl LsmStorageInner {
 
     /// Get a key from the storage. In day 7, this can be further optimized by using a bloom filter.
     pub fn get(&self, _key: &[u8]) -> Result<Option<Bytes>> {
-        unimplemented!()
+        let return_val_or_none = |x: Bytes| -> Result<Option<Bytes>> {
+            if x.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(x));
+        };
+        let storage_lock = self.state.read();
+        match storage_lock.memtable.get(_key) {
+            Some(x) => return_val_or_none(x),
+            None => {
+                for imm_memtable in storage_lock.imm_memtables.clone() {
+                    match imm_memtable.get(_key) {
+                        Some(x) => return return_val_or_none(x),
+                        _ => (),
+                    }
+                }
+                Ok(None)
+            }
+        }
     }
 
     /// Write a batch of data into the storage. Implement in week 2 day 7.
@@ -289,12 +310,32 @@ impl LsmStorageInner {
 
     /// Put a key-value pair into the storage by writing into the current memtable.
     pub fn put(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
-        unimplemented!()
+        if self
+            .state
+            .write()
+            .as_ref()
+            .memtable
+            .clone()
+            .reaches_limit_on_write(_key, _value)
+        {
+            let state_lock = self.state_lock.lock();
+            if self
+                .state
+                .write()
+                .as_ref()
+                .memtable
+                .clone()
+                .reaches_limit_on_write(_key, _value)
+            {
+                self.force_freeze_memtable(&state_lock)?
+            }
+        }
+        self.state.write().memtable.put(_key, _value)
     }
 
     /// Remove a key from the storage by writing an empty value.
     pub fn delete(&self, _key: &[u8]) -> Result<()> {
-        unimplemented!()
+        self.put(_key, &[])
     }
 
     pub(crate) fn path_of_sst_static(path: impl AsRef<Path>, id: usize) -> PathBuf {
@@ -319,7 +360,20 @@ impl LsmStorageInner {
 
     /// Force freeze the current memtable to an immutable memtable
     pub fn force_freeze_memtable(&self, _state_lock_observer: &MutexGuard<'_, ()>) -> Result<()> {
-        unimplemented!()
+        let memtable = Arc::new(MemTable::create(self.next_sst_id()));
+        {
+            // get the locked state and clone it
+            let mut locked_state = self.state.write();
+            let mut snapshot = locked_state.as_ref().clone();
+            // Swap the current memtable with a new one
+            let old_memtable = std::mem::replace(&mut snapshot.memtable, memtable);
+            // Add the memtable to the immutable memtables
+            snapshot.imm_memtables.insert(0, old_memtable);
+            // Update the snapshot
+            *locked_state = Arc::new(snapshot);
+            drop(locked_state)
+        }
+        Ok(())
     }
 
     /// Force flush the earliest-created immutable memtable to disk
@@ -338,6 +392,32 @@ impl LsmStorageInner {
         _lower: Bound<&[u8]>,
         _upper: Bound<&[u8]>,
     ) -> Result<FusedIterator<LsmIterator>> {
-        unimplemented!()
+        let storage_lock = self.state.read();
+        let mut memtable_iters = Vec::new();
+
+        // push newest to oldest, then reverse so newest on top
+        memtable_iters.push(Box::new(storage_lock.memtable.scan(_lower, _upper)));
+        for imm_memtable in storage_lock.imm_memtables.iter() {
+            memtable_iters.push(Box::new(imm_memtable.scan(_lower, _upper)));
+        }
+
+        let snapshot = {
+            let guard = self.state.read();
+            Arc::clone(&guard)
+        };
+
+        let mut sstable_iters = Vec::new();
+        for ssd_id in snapshot.l0_sstables.iter() {
+            let sstable = snapshot.sstables.get(ssd_id).unwrap().clone();
+            sstable_iters.push(Box::new(SsTableIterator::create_and_seek_to_first(sstable)?))
+        }
+
+        let two_merge_iter = TwoMergeIterator::create(
+            MergeIterator::create(memtable_iters),
+            MergeIterator::create(sstable_iters))?;
+        let lsm_iterator: LsmIterator = LsmIterator::new(two_merge_iter, map_bound(_upper))?;
+        let fused_iter: FusedIterator<LsmIterator> =
+            super::lsm_iterator::FusedIterator::new(lsm_iterator);
+        Ok(fused_iter)
     }
 }
