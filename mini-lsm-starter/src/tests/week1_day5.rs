@@ -141,6 +141,13 @@ fn test_task2_storage_scan() {
         .unwrap();
     storage.put(b"3", b"23333").unwrap();
     storage.delete(b"1").unwrap();
+    check_lsm_iter_result_by_key(
+        &mut storage
+            .scan(Bound::Included(b"1"), Bound::Included(b"2"))
+            .unwrap(),
+        vec![(Bytes::from("2"), Bytes::from("2333"))],
+    );
+
     let sst1 = generate_sst(
         10,
         dir.path().join("10.sst"),

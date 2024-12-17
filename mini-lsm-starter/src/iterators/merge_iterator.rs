@@ -1,6 +1,3 @@
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 use std::cmp::{self};
 use std::collections::binary_heap::PeekMut;
 use std::collections::BinaryHeap;
@@ -60,10 +57,10 @@ impl<I: StorageIterator> MergeIterator<I> {
             }
         }
 
-        let current = heap.pop().unwrap();
+        let current = heap.pop();
         Self {
             iters: heap,
-            current: Some(current),
+            current,
         }
     }
 }

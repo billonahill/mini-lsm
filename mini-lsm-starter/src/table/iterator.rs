@@ -1,6 +1,3 @@
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 use std::sync::Arc;
 
 use anyhow::{Error, Result};
@@ -52,10 +49,7 @@ impl SsTableIterator {
 
         self.blk_idx = self.table.find_block_idx(key);
         let block = self.table.read_block_cached(self.blk_idx)?;
-        self.blk_iter = BlockIterator::create_and_seek_to_first(block);
-        while key > self.blk_iter.key()  {
-            self.blk_iter.next();
-        }
+        self.blk_iter = BlockIterator::create_and_seek_to_key(block, key);
         Ok(())
     }
 }

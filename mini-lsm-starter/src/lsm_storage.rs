@@ -1,6 +1,5 @@
-#![allow(dead_code)] // REMOVE THIS LINE after fully implementing this functionality
-
 use std::collections::HashMap;
+use std::io::Read;
 use std::ops::{Bound, Deref};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
@@ -17,7 +16,9 @@ use crate::compact::{
     SimpleLeveledCompactionController, SimpleLeveledCompactionOptions, TieredCompactionController,
 };
 use crate::iterators::merge_iterator::MergeIterator;
+use crate::iterators::StorageIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
+use crate::key::{KeyBytes, KeyVec};
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
 use crate::mem_table::{map_bound, MemTable, MemTableIterator};
@@ -290,7 +291,7 @@ impl LsmStorageInner {
         };
         let storage_lock = self.state.read();
         match storage_lock.memtable.get(_key) {
-            Some(x) => return_val_or_none(x),
+            Some(x) => return return_val_or_none(x),
             None => {
                 for imm_memtable in storage_lock.imm_memtables.clone() {
                     match imm_memtable.get(_key) {
@@ -298,9 +299,32 @@ impl LsmStorageInner {
                         _ => (),
                     }
                 }
-                Ok(None)
+            }
+        };
+
+        let snapshot = {
+            let guard = self.state.read();
+            Arc::clone(&guard)
+        };
+
+        for ssd_id in snapshot.l0_sstables.iter() {
+            let sstable = snapshot.sstables.get(ssd_id).unwrap().clone();
+            let key_bytes = KeyVec::from_vec(_key.to_vec()).into_key_bytes();
+            if sstable.first_key() <= &key_bytes && &key_bytes <= sstable.last_key() {
+                let iter = SsTableIterator::create_and_seek_to_key(sstable, key_bytes.as_key_slice())?;
+                if iter.key() == key_bytes.as_key_slice() {
+                    let value = iter.value();
+                    return if value.len() == 0 {
+                        Ok(None)
+                    } else {
+                        Ok(Some(Bytes::copy_from_slice(value)))
+                    }
+                }
+                break;
             }
         }
+
+        Ok(None)
     }
 
     /// Write a batch of data into the storage. Implement in week 2 day 7.
@@ -409,7 +433,23 @@ impl LsmStorageInner {
         let mut sstable_iters = Vec::new();
         for ssd_id in snapshot.l0_sstables.iter() {
             let sstable = snapshot.sstables.get(ssd_id).unwrap().clone();
-            sstable_iters.push(Box::new(SsTableIterator::create_and_seek_to_first(sstable)?))
+            match _lower {
+                Bound::Included(x) => {
+                    sstable_iters.push(Box::new(
+                        SsTableIterator::create_and_seek_to_key(
+                            sstable,
+                            KeyVec::from_vec(Vec::from(x)).as_key_slice())?));
+                },
+                Bound::Excluded(x) => {
+                    let mut ss_iter = SsTableIterator::create_and_seek_to_key(
+                        sstable, KeyVec::from_vec(Vec::from(x)).as_key_slice())?;
+                    while KeyVec::from_vec(Vec::from(x)).as_key_slice() <= ss_iter.key() && ss_iter.is_valid() {
+                        ss_iter.next()?;
+                    }
+                    sstable_iters.push(Box::new(ss_iter));
+                },
+                _ => sstable_iters.push(Box::new(SsTableIterator::create_and_seek_to_first(sstable)?))
+            };
         }
 
         let two_merge_iter = TwoMergeIterator::create(

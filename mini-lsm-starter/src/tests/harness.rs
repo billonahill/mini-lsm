@@ -95,8 +95,6 @@ where
 {
     for (k, v) in expected {
         assert!(iter.is_valid());
-        println!("asserting expected key: {:?}, actual key: {:?}", k,
-            iter.key().for_testing_key_ref());
         assert_eq!(
             k,
             iter.key().for_testing_key_ref(),
