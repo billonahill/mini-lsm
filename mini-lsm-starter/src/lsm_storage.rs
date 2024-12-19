@@ -160,7 +160,8 @@ impl MiniLsm {
     pub fn close(&self) -> Result<()> {
         let mut flush_thread = self.flush_thread.lock();
         if let Some(flush_thread) = flush_thread.take() {
-            flush_thread.join()
+            flush_thread
+                .join()
                 .map_err(|e| anyhow::anyhow!("Could not join flush thread {:?}", e))?;
         }
         Ok(())
@@ -412,18 +413,19 @@ impl LsmStorageInner {
         let memtable_to_flush;
         {
             let guard = self.state.read();
-            memtable_to_flush = guard.imm_memtables.last().expect("No imm_memtables").clone();
+            memtable_to_flush = guard
+                .imm_memtables
+                .last()
+                .expect("No imm_memtables")
+                .clone();
         };
 
         let mut sst_table_builder = SsTableBuilder::new(self.options.block_size);
         memtable_to_flush.flush(&mut sst_table_builder)?;
         let sst_id = memtable_to_flush.id();
         let sst_path = self.path_of_sst(sst_id);
-        let sst = Arc::new(
-            sst_table_builder.build(
-                sst_id,
-                Some(self.block_cache.clone()),
-                sst_path)?);
+        let sst =
+            Arc::new(sst_table_builder.build(sst_id, Some(self.block_cache.clone()), sst_path)?);
 
         {
             let mut guard = self.state.write();

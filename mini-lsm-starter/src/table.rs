@@ -162,7 +162,11 @@ impl SsTable {
         );
         let first_key = block_meta.first().unwrap().first_key.clone();
         let last_key = block_meta.last().unwrap().last_key.clone();
-        println!("Open SsTable - first key = {:?}, last key = {:?}", first_key.clone(), last_key.clone());
+        println!(
+            "Open SsTable - first key = {:?}, last key = {:?}",
+            first_key.clone(),
+            last_key.clone()
+        );
         Ok(Self {
             file: file,
             id: id,

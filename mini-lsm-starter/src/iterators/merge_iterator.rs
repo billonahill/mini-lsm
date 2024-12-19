@@ -134,7 +134,6 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
         for heap_wrapper in self.iters.iter() {
             num = num + heap_wrapper.1.num_active_iterators()
         }
-       num
+        num
     }
-
 }
