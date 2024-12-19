@@ -16,14 +16,14 @@ use crate::compact::{
     SimpleLeveledCompactionController, SimpleLeveledCompactionOptions, TieredCompactionController,
 };
 use crate::iterators::merge_iterator::MergeIterator;
-use crate::iterators::StorageIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
+use crate::iterators::StorageIterator;
 use crate::key::{KeyBytes, KeyVec};
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
 use crate::mem_table::{map_bound, MemTable, MemTableIterator};
 use crate::mvcc::LsmMvccInner;
-use crate::table::{SsTable, SsTableIterator};
+use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
 
@@ -158,7 +158,12 @@ impl Drop for MiniLsm {
 
 impl MiniLsm {
     pub fn close(&self) -> Result<()> {
-        unimplemented!()
+        let mut flush_thread = self.flush_thread.lock();
+        if let Some(flush_thread) = flush_thread.take() {
+            flush_thread.join()
+                .map_err(|e| anyhow::anyhow!("Could not join flush thread {:?}", e))?;
+        }
+        Ok(())
     }
 
     /// Start the storage engine by either loading an existing directory or creating a new one if the directory does
@@ -311,14 +316,15 @@ impl LsmStorageInner {
             let sstable = snapshot.sstables.get(ssd_id).unwrap().clone();
             let key_bytes = KeyVec::from_vec(_key.to_vec()).into_key_bytes();
             if sstable.first_key() <= &key_bytes && &key_bytes <= sstable.last_key() {
-                let iter = SsTableIterator::create_and_seek_to_key(sstable, key_bytes.as_key_slice())?;
+                let iter =
+                    SsTableIterator::create_and_seek_to_key(sstable, key_bytes.as_key_slice())?;
                 if iter.key() == key_bytes.as_key_slice() {
                     let value = iter.value();
                     return if value.len() == 0 {
                         Ok(None)
                     } else {
                         Ok(Some(Bytes::copy_from_slice(value)))
-                    }
+                    };
                 }
                 break;
             }
@@ -402,7 +408,43 @@ impl LsmStorageInner {
 
     /// Force flush the earliest-created immutable memtable to disk
     pub fn force_flush_next_imm_memtable(&self) -> Result<()> {
-        unimplemented!()
+        let _state_lock = self.state_lock.lock();
+        let memtable_to_flush;
+        {
+            let guard = self.state.read();
+            memtable_to_flush = guard.imm_memtables.last().expect("No imm_memtables").clone();
+        };
+
+        let mut sst_table_builder = SsTableBuilder::new(self.options.block_size);
+        memtable_to_flush.flush(&mut sst_table_builder)?;
+        let sst_id = memtable_to_flush.id();
+        let sst_path = self.path_of_sst(sst_id);
+        let sst = Arc::new(
+            sst_table_builder.build(
+                sst_id,
+                Some(self.block_cache.clone()),
+                sst_path)?);
+
+        {
+            let mut guard = self.state.write();
+            let mut snapshot = guard.as_ref().clone();
+            // Remove the memtable from the immutable memtables.
+            let mem = snapshot.imm_memtables.pop().unwrap();
+            assert_eq!(mem.id(), sst_id);
+            // Add L0 table
+            if self.compaction_controller.flush_to_l0() {
+                // In leveled compaction or no compaction, simply flush to L0
+                snapshot.l0_sstables.insert(0, sst_id);
+            } else {
+                // In tiered compaction, create a new tier
+                snapshot.levels.insert(0, (sst_id, vec![sst_id]));
+            }
+            println!("flushed {}.sst with size={}", sst_id, sst.table_size());
+            snapshot.sstables.insert(sst_id, sst);
+            // Update the snapshot.
+            *guard = Arc::new(snapshot);
+        }
+        Ok(())
     }
 
     pub fn new_txn(&self) -> Result<()> {
@@ -435,26 +477,33 @@ impl LsmStorageInner {
             let sstable = snapshot.sstables.get(ssd_id).unwrap().clone();
             match _lower {
                 Bound::Included(x) => {
-                    sstable_iters.push(Box::new(
-                        SsTableIterator::create_and_seek_to_key(
-                            sstable,
-                            KeyVec::from_vec(Vec::from(x)).as_key_slice())?));
-                },
+                    sstable_iters.push(Box::new(SsTableIterator::create_and_seek_to_key(
+                        sstable,
+                        KeyVec::from_vec(Vec::from(x)).as_key_slice(),
+                    )?));
+                }
                 Bound::Excluded(x) => {
                     let mut ss_iter = SsTableIterator::create_and_seek_to_key(
-                        sstable, KeyVec::from_vec(Vec::from(x)).as_key_slice())?;
-                    while KeyVec::from_vec(Vec::from(x)).as_key_slice() <= ss_iter.key() && ss_iter.is_valid() {
+                        sstable,
+                        KeyVec::from_vec(Vec::from(x)).as_key_slice(),
+                    )?;
+                    while KeyVec::from_vec(Vec::from(x)).as_key_slice() <= ss_iter.key()
+                        && ss_iter.is_valid()
+                    {
                         ss_iter.next()?;
                     }
                     sstable_iters.push(Box::new(ss_iter));
-                },
-                _ => sstable_iters.push(Box::new(SsTableIterator::create_and_seek_to_first(sstable)?))
+                }
+                _ => sstable_iters.push(Box::new(SsTableIterator::create_and_seek_to_first(
+                    sstable,
+                )?)),
             };
         }
 
         let two_merge_iter = TwoMergeIterator::create(
             MergeIterator::create(memtable_iters),
-            MergeIterator::create(sstable_iters))?;
+            MergeIterator::create(sstable_iters),
+        )?;
         let lsm_iterator: LsmIterator = LsmIterator::new(two_merge_iter, map_bound(_upper))?;
         let fused_iter: FusedIterator<LsmIterator> =
             super::lsm_iterator::FusedIterator::new(lsm_iterator);

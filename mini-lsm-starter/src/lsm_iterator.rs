@@ -3,15 +3,16 @@ use bytes::Bytes;
 use std::collections::Bound;
 use std::str;
 
+use crate::iterators::two_merge_iterator::TwoMergeIterator;
+use crate::table::SsTableIterator;
 use crate::{
     iterators::{merge_iterator::MergeIterator, StorageIterator},
     mem_table::MemTableIterator,
 };
-use crate::iterators::two_merge_iterator::TwoMergeIterator;
-use crate::table::SsTableIterator;
 
 /// Represents the internal type for an LSM iterator. This type will be changed across the tutorial for multiple times.
-type LsmIteratorInner = TwoMergeIterator<MergeIterator<MemTableIterator>, MergeIterator<SsTableIterator>>;
+type LsmIteratorInner =
+    TwoMergeIterator<MergeIterator<MemTableIterator>, MergeIterator<SsTableIterator>>;
 
 pub struct LsmIterator {
     inner: LsmIteratorInner,
@@ -32,12 +33,6 @@ impl LsmIterator {
 
     fn next_inner(&mut self) -> Result<()> {
         self.inner.next()?;
-        println!(
-            "next_inner. Current key:value is now {:?}:{:?}, is_empty: {:?}",
-            str::from_utf8(self.key()).unwrap(),
-            str::from_utf8(self.value()).unwrap(),
-            self.inner.value().is_empty()
-        );
 
         if !self.inner.is_valid() {
             self.is_valid = false;
@@ -52,17 +47,7 @@ impl LsmIterator {
     }
 
     fn move_to_non_delete(&mut self) -> Result<()> {
-        println!(
-            "move_to_non_delete. Checking if current key value is empty {:?}:{:?}",
-            str::from_utf8(self.key()).unwrap(),
-            str::from_utf8(self.value()).unwrap()
-        );
         while self.is_valid() && self.inner.value().is_empty() {
-            println!(
-                "move_to_non_delete. Current key value is empty {:?}:{:?}",
-                str::from_utf8(self.key()).unwrap(),
-                str::from_utf8(self.value()).unwrap()
-            );
             self.next_inner()?;
         }
         Ok(())
@@ -85,20 +70,13 @@ impl StorageIterator for LsmIterator {
     }
 
     fn next(&mut self) -> Result<()> {
-        println!("LsmIterator.next called");
-        println!(
-            "LsmIterator.next key:value after non-delete: {:?}:{:?}",
-            str::from_utf8(self.key()).unwrap(),
-            str::from_utf8(self.value()).unwrap()
-        );
         self.next_inner()?;
         self.move_to_non_delete()?;
-        println!(
-            "LsmIterator.next key:value after next_inner: {:?}:{:?}",
-            str::from_utf8(self.key()).unwrap(),
-            str::from_utf8(self.value()).unwrap()
-        );
         Ok(())
+    }
+
+    fn num_active_iterators(&self) -> usize {
+        self.inner.num_active_iterators()
     }
 }
 
@@ -154,5 +132,9 @@ impl<I: StorageIterator> StorageIterator for FusedIterator<I> {
             }
         }
         return Ok(());
+    }
+
+    fn num_active_iterators(&self) -> usize {
+        self.iter.num_active_iterators()
     }
 }

@@ -146,6 +146,9 @@ impl LsmStorageInner {
     }
 
     fn trigger_flush(&self) -> Result<()> {
+        if self.state.write().imm_memtables.len() > self.options.num_memtable_limit {
+            self.force_flush_next_imm_memtable()?
+        }
         Ok(())
     }
 
@@ -159,7 +162,7 @@ impl LsmStorageInner {
             loop {
                 crossbeam_channel::select! {
                     recv(ticker) -> _ => if let Err(e) = this.trigger_flush() {
-                        eprintln!("flush failed: {}", e);
+                        eprintln!("flush failed: {:?}", e);
                     },
                     recv(rx) -> _ => return
                 }

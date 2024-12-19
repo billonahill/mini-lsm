@@ -8,8 +8,8 @@ use anyhow::Result;
 use bytes::BufMut;
 
 use super::{BlockMeta, FileObject, SsTable};
-use crate::{block::BlockBuilder, key::KeySlice, lsm_storage::BlockCache};
 use crate::key::{Key, KeyBytes};
+use crate::{block::BlockBuilder, key::KeySlice, lsm_storage::BlockCache};
 
 const SIZE_OF_U32: usize = size_of::<u32>();
 
@@ -60,7 +60,6 @@ impl SsTableBuilder {
     fn finish_block(&mut self) {
         let builder = std::mem::replace(&mut self.builder, BlockBuilder::new(self.block_size));
         let block_bytes = builder.build().encode();
-        println!("finishing block - offset: {:?}", self.data.len());
         let block_meta = BlockMeta {
             offset: self.data.len(),
             first_key: Key::from_vec(self.first_key.clone()).into_key_bytes(),

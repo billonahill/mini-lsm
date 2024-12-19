@@ -128,4 +128,13 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
 
         Ok(())
     }
+
+    fn num_active_iterators(&self) -> usize {
+        let mut num = 0; // self.current.unwrap().1.num_active_iterators().clone();
+        for heap_wrapper in self.iters.iter() {
+            num = num + heap_wrapper.1.num_active_iterators()
+        }
+       num
+    }
+
 }

@@ -93,10 +93,10 @@ impl BlockIterator {
                 as usize;
         let value_start_idx = (value_len_start_idx + SIZEOF_U16) as usize;
         self.value_range = (value_start_idx, value_start_idx + value_len);
-        println!(
-            "Seeked to key {:?}",
-            as_bytes(self.key.for_testing_key_ref())
-        )
+        // println!(
+        //     "Seeked to key {:?}",
+        //     as_bytes(self.key.for_testing_key_ref())
+        // )
     }
 
     /// Seek to the first key that >= `key`.

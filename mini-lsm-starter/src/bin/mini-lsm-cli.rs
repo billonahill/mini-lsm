@@ -14,6 +14,8 @@ use mini_lsm_wrapper::iterators::StorageIterator;
 use mini_lsm_wrapper::lsm_storage::{LsmStorageOptions, MiniLsm};
 use std::path::PathBuf;
 use std::sync::Arc;
+use strum::IntoEnumIterator;
+use strum_macros::EnumIter;
 
 #[derive(Debug, Clone, ValueEnum)]
 enum CompactionStrategy {
@@ -109,6 +111,11 @@ impl ReplHandler {
                     println!("invalid command");
                 }
             },
+            Command::Help => {
+                for command in Command::iter() {
+                    println!("{:?}", command);
+                }
+            }
             Command::Dump => {
                 self.lsm.dump_structure();
                 println!("dump success");
@@ -133,7 +140,7 @@ impl ReplHandler {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, EnumIter)]
 enum Command {
     Fill {
         begin: u64,
@@ -150,6 +157,7 @@ enum Command {
         end: Option<String>,
     },
 
+    Help,
     Dump,
     Flush,
     FullCompaction,
@@ -223,6 +231,7 @@ impl Command {
                 del,
                 get,
                 scan,
+                map(tag_no_case("help"), |_| Command::Help),
                 map(tag_no_case("dump"), |_| Command::Dump),
                 map(tag_no_case("flush"), |_| Command::Flush),
                 map(tag_no_case("full_compaction"), |_| Command::FullCompaction),
@@ -233,7 +242,7 @@ impl Command {
 
         command(input)
             .map(|(_, c)| c)
-            .map_err(|e| anyhow::anyhow!("{}", e))
+            .map_err(|e| anyhow::anyhow!("Unrecognized command: {}", e))
     }
 }
 
