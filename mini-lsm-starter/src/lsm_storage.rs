@@ -1,12 +1,11 @@
 use std::collections::HashMap;
 use std::io::Read;
-use std::ops::{Bound, Deref};
+use std::ops::Bound;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
 use anyhow::Result;
-use arc_swap::AsRaw;
 use bytes::Bytes;
 use parking_lot::{Mutex, MutexGuard, RwLock};
 
@@ -18,10 +17,10 @@ use crate::compact::{
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::iterators::StorageIterator;
-use crate::key::{KeyBytes, KeyVec};
+use crate::key::KeyVec;
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
-use crate::mem_table::{map_bound, MemTable, MemTableIterator};
+use crate::mem_table::{map_bound, MemTable};
 use crate::mvcc::LsmMvccInner;
 use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 
