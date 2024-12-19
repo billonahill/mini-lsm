@@ -233,17 +233,20 @@ impl SsTable {
     /// Note: You may want to make use of the `first_key` stored in `BlockMeta`.
     /// You may also assume the key-value pairs stored in each consecutive block are sorted.
     pub fn find_block_idx(&self, key: KeySlice) -> usize {
-        for blk_idx in 0..self.block_meta.len() {
-            let bm = &self.block_meta[blk_idx];
-            println!(
-                "seek_to_key - blk_idx={:?} first_key={:?}, last_key={:?}",
-                blk_idx, bm.first_key, bm.last_key
-            );
-            if key <= bm.last_key.as_key_slice() {
-                return blk_idx;
-            }
-        }
-        self.block_meta.len()
+        self.block_meta
+            .partition_point(|meta| meta.first_key.as_key_slice() <= key)
+            .saturating_sub(1)
+        // for blk_idx in 0..self.block_meta.len() {
+        //     let bm = &self.block_meta[blk_idx];
+        //     println!(
+        //         "seek_to_key - blk_idx={:?} first_key={:?}, last_key={:?}",
+        //         blk_idx, bm.first_key, bm.last_key
+        //     );
+        //     if key <= bm.last_key.as_key_slice() {
+        //         return blk_idx;
+        //     }
+        // }
+        // self.block_meta.len()
     }
 
     /// Get number of data blocks.
