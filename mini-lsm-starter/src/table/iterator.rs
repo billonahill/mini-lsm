@@ -44,7 +44,7 @@ impl SsTableIterator {
     /// this function.
     pub fn seek_to_key(&mut self, key: KeySlice) -> Result<()> {
         if key > self.table.last_key.as_key_slice() {
-            self.blk_idx = self.table.num_of_blocks();
+            self.blk_idx = self.table.num_of_blocks(); // flag as invalid
             return Ok(());
         }
 
