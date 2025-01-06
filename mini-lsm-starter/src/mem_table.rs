@@ -1,4 +1,5 @@
 #![allow(dead_code)] // REMOVE THIS LINE after fully implementing this functionality
+#![allow(unused_imports)] // TODO(you): remove this lint after implementing this mod
 
 use std::ops::Bound;
 use std::path::Path;
@@ -13,7 +14,7 @@ use nom::AsBytes;
 use ouroboros::self_referencing;
 
 use crate::iterators::StorageIterator;
-use crate::key::{KeyBytes, KeySlice};
+use crate::key::KeySlice;
 use crate::table::SsTableBuilder;
 use crate::wal::Wal;
 

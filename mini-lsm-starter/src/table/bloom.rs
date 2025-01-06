@@ -56,9 +56,16 @@ impl Bloom {
     }
 
     /// Encode a bloom filter
-    pub fn encode(&self, buf: &mut Vec<u8>) {
+    pub fn encode(&self, buf: &mut Vec<u8>) -> usize {
         buf.extend(&self.filter);
         buf.put_u8(self.k);
+        self.filter.len() + 1
+    }
+
+    pub fn encode_bloom(key_hashes: &Vec<u32>, buf: &mut Vec<u8>) -> usize {
+        let bits_per_key = Bloom::bloom_bits_per_key(key_hashes.len(), 0.01);
+        let bloom = Bloom::build_from_key_hashes(&key_hashes, bits_per_key);
+        bloom.encode(buf)
     }
 
     /// Get bloom filter bits per key from entries count and FPR
@@ -70,16 +77,30 @@ impl Bloom {
     }
 
     /// Build bloom filter from key hashes
-    pub fn build_from_key_hashes(keys: &[u32], bits_per_key: usize) -> Self {
+    pub fn build_from_key_hashes(key_hashes: &[u32], bits_per_key: usize) -> Self {
         let k = (bits_per_key as f64 * 0.69) as u32;
-        let k = k.clamp(1, 30);
-        let nbits = (keys.len() * bits_per_key).max(64);
+        let k = k.clamp(1, 30); // number of hash functions
+        let nbits = (key_hashes.len() * bits_per_key).max(64);
         let nbytes = (nbits + 7) / 8;
         let nbits = nbytes * 8;
         let mut filter = BytesMut::with_capacity(nbytes);
         filter.resize(nbytes, 0);
 
-        // TODO: build the bloom filter
+        // for each key hash, need to set nbits bits on filter
+        // u32 is 4 bytes or 32 bits, do h % nbits to get filter position
+        println!(
+            "Filter bytes = {}, bits = {}, bits/key = {}",
+            nbytes, nbits, bits_per_key
+        );
+        for (i, hash) in key_hashes.iter().enumerate() {
+            let mut h = *hash;
+            let delta = h.rotate_left(15);
+            for _ in 0..k {
+                let bit_pos = (h as usize) % nbits;
+                filter.set_bit(bit_pos, true);
+                h = h.wrapping_add(delta);
+            }
+        }
 
         Self {
             filter: filter.freeze(),
@@ -95,8 +116,14 @@ impl Bloom {
         } else {
             let nbits = self.filter.bit_len();
             let delta = h.rotate_left(15);
-
-            // TODO: probe the bloom filter
+            let mut _h = h;
+            for _ in 0..self.k {
+                let bit_pos = (_h as usize) % nbits;
+                if !self.filter.get_bit(bit_pos) {
+                    return false;
+                }
+                _h = _h.wrapping_add(delta);
+            }
 
             true
         }

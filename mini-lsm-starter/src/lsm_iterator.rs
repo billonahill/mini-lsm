@@ -1,7 +1,6 @@
 use anyhow::{bail, Result};
 use bytes::Bytes;
 use std::collections::Bound;
-use std::str;
 
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::table::SsTableIterator;

@@ -81,13 +81,22 @@ impl BlockIterator {
     fn seek(&mut self, index: usize) {
         let offset = self.block.offsets[index] as usize;
 
-        let key_len = as_u16(&self.block.data[offset..offset + SIZEOF_U16]) as usize;
-        let key_start_idx = offset + SIZEOF_U16;
+        let key_overlap_len = as_u16(&self.block.data[offset..offset + SIZEOF_U16]) as usize;
+        let rest_key_len =
+            as_u16(&self.block.data[offset + SIZEOF_U16..offset + SIZEOF_U16]) as usize;
+        // let key_len = as_u16(&self.block.data[offset..offset + SIZEOF_U16]) as usize;
+        let key_start_idx = offset + 2 * SIZEOF_U16;
         let mut key_vec = KeyVec::new();
-        key_vec.append(&self.block.data[key_start_idx..key_start_idx + key_len]);
+        if !self.first_key.is_empty() && key_overlap_len > 0 {
+            key_vec.append(&self.first_key.raw_ref()[..key_overlap_len]);
+        }
+        key_vec.append(&self.block.data[key_start_idx..key_start_idx + rest_key_len]);
         self.key = key_vec;
+        if self.first_key.is_empty() {
+            self.first_key = self.key.clone();
+        }
 
-        let value_len_start_idx = key_start_idx + key_len;
+        let value_len_start_idx = key_start_idx + rest_key_len;
         let value_len =
             as_u16(&self.block.data[value_len_start_idx..value_len_start_idx + SIZEOF_U16])
                 as usize;

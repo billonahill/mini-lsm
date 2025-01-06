@@ -8,7 +8,8 @@ use anyhow::Result;
 use bytes::BufMut;
 
 use super::{BlockMeta, FileObject, SsTable};
-use crate::key::{Key, KeyBytes};
+use crate::key::Key;
+use crate::table::bloom::Bloom;
 use crate::{block::BlockBuilder, key::KeySlice, lsm_storage::BlockCache};
 
 const SIZE_OF_U32: usize = size_of::<u32>();
@@ -19,6 +20,7 @@ pub struct SsTableBuilder {
     first_key: Vec<u8>,
     last_key: Vec<u8>,
     data: Vec<u8>,
+    key_hashes: Vec<u32>,
     pub(crate) meta: Vec<BlockMeta>,
     block_size: usize,
 }
@@ -32,6 +34,7 @@ impl SsTableBuilder {
             last_key: vec![],
             data: vec![],
             meta: vec![],
+            key_hashes: vec![],
             block_size,
         }
     }
@@ -46,6 +49,7 @@ impl SsTableBuilder {
         }
 
         if self.builder.add(key, value) {
+            self.key_hashes.push(farmhash::fingerprint32(key.raw_ref()));
             self.last_key = key.to_key_vec().into_inner();
             return;
         }
@@ -87,8 +91,14 @@ impl SsTableBuilder {
         path: impl AsRef<Path>,
     ) -> Result<SsTable> {
         self.finish_block();
+        // add the data bytes
         let mut output_bytes: Vec<u8> = self.data.clone();
+        // add the block meta and bloom filter
         BlockMeta::encode_block_meta(&self.meta, &mut output_bytes);
+        let bloom_size = Bloom::encode_bloom(&self.key_hashes, &mut output_bytes);
+        // append the offset of the bloom
+        output_bytes.put_u32(bloom_size as u32);
+        // append the offset of the meta, which is the data length
         output_bytes.put_u32(self.data.len() as u32);
         let file = FileObject::create(path.as_ref(), output_bytes)?;
         let ss_table = SsTable::open(id, block_cache, file)?;

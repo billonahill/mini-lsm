@@ -1,25 +1,26 @@
 #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
-pub(crate) mod bloom;
-mod builder;
-mod iterator;
-
 use std::fs;
 use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
-pub use builder::SsTableBuilder;
 use bytes::{Buf, BufMut};
+
+pub use builder::SsTableBuilder;
 pub use iterator::SsTableIterator;
 
-use crate::block::{Block, BlockIterator};
+use crate::block::Block;
 use crate::key::{KeyBytes, KeySlice};
 use crate::lsm_storage::BlockCache;
 
 use self::bloom::Bloom;
+
+pub(crate) mod bloom;
+mod builder;
+mod iterator;
 
 pub(crate) const SIZEOF_U16: usize = std::mem::size_of::<u16>();
 pub(crate) const SIZEOF_U32: usize = std::mem::size_of::<u32>();
@@ -112,8 +113,8 @@ impl FileObject {
 
     /// Create a new file object (day 2) and write the file to the disk (day 4).
     pub fn create(path: &Path, data: Vec<u8>) -> Result<Self> {
-        if let parent_path = path.parent().unwrap() {
-            fs::create_dir_all(parent_path)?;
+        if path.parent().is_some() {
+            fs::create_dir_all(path.parent().unwrap())?;
         }
         std::fs::write(path, &data)?;
         File::open(path)?.sync_all()?;
@@ -155,13 +156,30 @@ impl SsTable {
 
     /// Open SSTable from a file.
     pub fn open(id: usize, block_cache: Option<Arc<BlockCache>>, file: FileObject) -> Result<Self> {
-        let block_meta_offset = (&file.read(file.size() - 4, 4)?[..]).get_u32() as u64;
+        let block_meta_offset =
+            (&file.read(file.size() - SIZEOF_U32 as u64, SIZEOF_U32 as u64)?[..]).get_u32() as u64;
+        let bloom_size = (&file.read(file.size() - 2 * SIZEOF_U32 as u64, SIZEOF_U32 as u64)?[..])
+            .get_u32() as u64;
+        println!(
+            "block_meta_offset: {} bloom_size: {} file size: {}",
+            block_meta_offset,
+            bloom_size,
+            file.size()
+        );
         let block_meta = BlockMeta::decode_block_meta(
-            file.read(block_meta_offset, file.size() - block_meta_offset)?
-                .as_slice(),
+            file.read(
+                block_meta_offset,
+                file.size() - block_meta_offset - bloom_size,
+            )?
+            .as_slice(),
         );
         let first_key = block_meta.first().unwrap().first_key.clone();
         let last_key = block_meta.last().unwrap().last_key.clone();
+        let bloom = Bloom::decode(
+            file.read(file.size() - bloom_size - 2 * SIZEOF_U32 as u64, bloom_size)?
+                .as_slice(),
+        )
+        .unwrap();
         println!(
             "Open SsTable - first key = {:?}, last key = {:?}",
             first_key.clone(),
@@ -175,7 +193,7 @@ impl SsTable {
             block_meta_offset: block_meta_offset as usize,
             first_key: first_key,
             last_key: last_key,
-            bloom: None,
+            bloom: Some(bloom),
             max_ts: 0,
         })
     }
