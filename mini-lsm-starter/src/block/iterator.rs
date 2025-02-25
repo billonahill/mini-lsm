@@ -81,9 +81,17 @@ impl BlockIterator {
     fn seek(&mut self, index: usize) {
         let offset = self.block.offsets[index] as usize;
 
+        // See BlockBuilder.add() in builder.rs for format
         let key_overlap_len = as_u16(&self.block.data[offset..offset + SIZEOF_U16]) as usize;
+        // println!("seek() block offsets: {:?}", self.block.offsets);
+        // println!(
+        //     "seek() block.data length: {}, offset: {}, key_overlap_len: {}",
+        //     &self.block.data.len(),
+        //     offset,
+        //     key_overlap_len
+        // );
         let rest_key_len =
-            as_u16(&self.block.data[offset + SIZEOF_U16..offset + SIZEOF_U16]) as usize;
+            as_u16(&self.block.data[offset + SIZEOF_U16..offset + 2 * SIZEOF_U16]) as usize;
         // let key_len = as_u16(&self.block.data[offset..offset + SIZEOF_U16]) as usize;
         let key_start_idx = offset + 2 * SIZEOF_U16;
         let mut key_vec = KeyVec::new();
@@ -102,10 +110,11 @@ impl BlockIterator {
                 as usize;
         let value_start_idx = (value_len_start_idx + SIZEOF_U16) as usize;
         self.value_range = (value_start_idx, value_start_idx + value_len);
-        // println!(
-        //     "Seeked to key {:?}",
-        //     as_bytes(self.key.for_testing_key_ref())
-        // )
+        println!(
+            "Seeked to key {:?}: {:?}",
+            as_bytes(self.key.for_testing_key_ref()),
+            as_bytes(self.value())
+        )
     }
 
     /// Seek to the first key that >= `key`.

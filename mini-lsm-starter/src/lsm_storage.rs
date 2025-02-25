@@ -3,6 +3,7 @@
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
 use std::collections::HashMap;
+use std::fs::File;
 use std::io::Read;
 use std::ops::Bound;
 use std::path::{Path, PathBuf};
@@ -18,6 +19,7 @@ use crate::compact::{
     CompactionController, CompactionOptions, LeveledCompactionController, LeveledCompactionOptions,
     SimpleLeveledCompactionController, SimpleLeveledCompactionOptions, TieredCompactionController,
 };
+use crate::iterators::concat_iterator::SstConcatIterator;
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::iterators::StorageIterator;
@@ -118,6 +120,10 @@ impl LsmStorageOptions {
             serializable: false,
         }
     }
+}
+
+fn key_within(user_key: &[u8], table_begin: KeySlice, table_end: KeySlice) -> bool {
+    table_begin.raw_ref() <= user_key && user_key <= table_end.raw_ref()
 }
 
 #[derive(Clone, Debug)]
@@ -291,49 +297,80 @@ impl LsmStorageInner {
     }
 
     /// Get a key from the storage. In day 7, this can be further optimized by using a bloom filter.
-    pub fn get(&self, _key: &[u8]) -> Result<Option<Bytes>> {
-        let return_val_or_none = |x: Bytes| -> Result<Option<Bytes>> {
-            if x.is_empty() {
-                return Ok(None);
-            }
-            return Ok(Some(x));
-        };
-        let storage_lock = self.state.read();
-        match storage_lock.memtable.get(_key) {
-            Some(x) => return return_val_or_none(x),
-            None => {
-                for imm_memtable in storage_lock.imm_memtables.clone() {
-                    match imm_memtable.get(_key) {
-                        Some(x) => return return_val_or_none(x),
-                        _ => (),
-                    }
-                }
-            }
-        };
-
+    pub fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
         let snapshot = {
             let guard = self.state.read();
             Arc::clone(&guard)
-        };
+        }; // drop global lock here
 
-        for ssd_id in snapshot.l0_sstables.iter() {
-            let sstable = snapshot.sstables.get(ssd_id).unwrap().clone();
-            let key_bytes = KeyVec::from_vec(_key.to_vec()).into_key_bytes();
-            if sstable.first_key() <= &key_bytes && &key_bytes <= sstable.last_key() {
-                let iter =
-                    SsTableIterator::create_and_seek_to_key(sstable, key_bytes.as_key_slice())?;
-                if iter.key() == key_bytes.as_key_slice() {
-                    let value = iter.value();
-                    return if value.len() == 0 {
-                        Ok(None)
-                    } else {
-                        Ok(Some(Bytes::copy_from_slice(value)))
-                    };
+        // Search on the current memtable.
+        if let Some(value) = snapshot.memtable.get(key) {
+            if value.is_empty() {
+                // found tomestone, return key not exists
+                return Ok(None);
+            }
+            return Ok(Some(value));
+        }
+
+        // Search on immutable memtables.
+        for memtable in snapshot.imm_memtables.iter() {
+            if let Some(value) = memtable.get(key) {
+                if value.is_empty() {
+                    // found tomestone, return key not exists
+                    return Ok(None);
                 }
-                break;
+                return Ok(Some(value));
             }
         }
 
+        let mut l0_iters = Vec::with_capacity(snapshot.l0_sstables.len());
+
+        let keep_table = |key: &[u8], table: &SsTable| {
+            if key_within(
+                key,
+                table.first_key().as_key_slice(),
+                table.last_key().as_key_slice(),
+            ) {
+                if let Some(bloom) = &table.bloom {
+                    if bloom.may_contain(farmhash::fingerprint32(key)) {
+                        return true;
+                    }
+                } else {
+                    return true;
+                }
+            }
+            false
+        };
+
+        for table in snapshot.l0_sstables.iter() {
+            let table = snapshot.sstables[table].clone();
+            if keep_table(key, &table) {
+                l0_iters.push(Box::new(SsTableIterator::create_and_seek_to_key(
+                    table,
+                    KeySlice::from_slice(key),
+                )?));
+            }
+        }
+        let l0_iter = MergeIterator::create(l0_iters);
+        let mut level_iters = Vec::with_capacity(snapshot.levels.len());
+        for (_, level_sst_ids) in &snapshot.levels {
+            let mut level_ssts = Vec::with_capacity(level_sst_ids.len());
+            for table in level_sst_ids {
+                let table = snapshot.sstables[table].clone();
+                if keep_table(key, &table) {
+                    level_ssts.push(table);
+                }
+            }
+            let level_iter =
+                SstConcatIterator::create_and_seek_to_key(level_ssts, KeySlice::from_slice(key))?;
+            level_iters.push(Box::new(level_iter));
+        }
+
+        let iter = TwoMergeIterator::create(l0_iter, MergeIterator::create(level_iters))?;
+
+        if iter.is_valid() && iter.key().raw_ref() == key && !iter.value().is_empty() {
+            return Ok(Some(Bytes::copy_from_slice(iter.value())));
+        }
         Ok(None)
     }
 
@@ -389,7 +426,8 @@ impl LsmStorageInner {
     }
 
     pub(super) fn sync_dir(&self) -> Result<()> {
-        unimplemented!()
+        File::open(&self.path)?.sync_all()?;
+        Ok(())
     }
 
     /// Force freeze the current memtable to an immutable memtable
@@ -516,7 +554,14 @@ impl LsmStorageInner {
             MergeIterator::create(memtable_iters),
             MergeIterator::create(sstable_iters),
         )?;
-        let lsm_iterator: LsmIterator = LsmIterator::new(two_merge_iter, map_bound(_upper))?;
+        let mut l1_sstables = vec![];
+        for ssd_id in &snapshot.levels[0].1.clone() {
+            l1_sstables.push(snapshot.sstables.get(&ssd_id).unwrap().clone());
+        }
+        let l1_concat_iter = SstConcatIterator::create_and_seek_to_first(l1_sstables).unwrap();
+        let three_merge_iter = TwoMergeIterator::create(two_merge_iter, l1_concat_iter)?;
+
+        let lsm_iterator: LsmIterator = LsmIterator::new(three_merge_iter, map_bound(_upper))?;
         let fused_iter: FusedIterator<LsmIterator> =
             super::lsm_iterator::FusedIterator::new(lsm_iterator);
         Ok(fused_iter)

@@ -49,6 +49,7 @@ impl BlockBuilder {
     #[must_use]
     pub fn add(&mut self, key: KeySlice, value: &[u8]) -> bool {
         assert!(!key.is_empty(), "key must not be empty");
+        let overlap = self.compute_overlap(&key);
         if self.first_key.is_empty() {
             self.first_key = key.to_key_vec()
         }
@@ -60,7 +61,6 @@ impl BlockBuilder {
         }
         // Add the offset of the data into the offset array.
         self.offsets.push(self.data.len() as u16);
-        let overlap = self.compute_overlap(&key);
         self.data.put_u16(overlap as u16);
         self.data.put_u16((key.len() - overlap) as u16);
         self.data.put(&key.raw_ref()[overlap..]);
